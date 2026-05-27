@@ -119,10 +119,30 @@ public:
     //     (we return early via IsSequenceRunning).
     //   - The channel tester overwrites our values for channels it's testing,
     //     since it runs after this hook.
+    //
+    // Stale-buffer fix: readFrame() only writes channels present in the FSEQ
+    // file.  Channels outside the sequence's range keep whatever value was in
+    // m_seqData from the previous non-sequence frame — which may include our
+    // override.  On the first frame of a new sequence we explicitly zero every
+    // override channel so those channels start clean regardless of whether the
+    // sequence file addresses them.
     // -----------------------------------------------------------------------
     void modifySequenceData(int ms, uint8_t* seqData) override {
-        if (sequence && sequence->IsSequenceRunning())
+        bool seqRunning = sequence && sequence->IsSequenceRunning();
+
+        if (seqRunning) {
+            if (!m_prevSeqRunning) {
+                // Transition: idle → sequence.  Zero our channels so stale
+                // override values don't bleed into the new sequence's first frame.
+                std::lock_guard<std::mutex> lk(m_mutex);
+                for (const auto& [ch, val] : m_overrides)
+                    seqData[ch - 1] = 0;
+            }
+            m_prevSeqRunning = true;
             return;
+        }
+
+        m_prevSeqRunning = false;
         std::lock_guard<std::mutex> lk(m_mutex);
         for (const auto& [ch, val] : m_overrides)
             seqData[ch - 1] = val;   // ch is 1-based; seqData is 0-indexed
@@ -159,6 +179,7 @@ public:
 
 private:
     std::atomic<bool>        m_forcingOutput{false};
+    bool                     m_prevSeqRunning{false};  // output-thread only, no sync needed
     std::mutex               m_mutex;
     std::map<int, uint8_t>   m_overrides;        // channel (1-based) → value
     std::vector<std::string> m_registeredCommands;

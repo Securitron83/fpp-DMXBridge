@@ -5,13 +5,19 @@
  *   "DMX Bridge - Set Channel"   args: Channel (1–65535), Value (0–255)
  *   "DMX Bridge - Clear All"     no args — zeroes every active override
  *
- * When at least one override is active, the plugin calls
- * EnableChannelOutput() + StartForcingChannelOutput() so that fppd keeps
- * sending data even without a running sequence.  StopForcingChannelOutput()
- * is called when overrides are cleared.
+ * Priority (highest to lowest):
+ *   1. Running sequence — always wins
+ *   2. FPP Display Testing (channel tester) — overrides the plugin
+ *   3. This plugin's active overrides
  *
- * Overrides are applied in modifyChannelData() only while no playlist or
- * sequence is active — a running sequence has full control over those channels.
+ * Overrides are written in modifySequenceData(), which runs BEFORE the
+ * channel tester applies its values.  The tester therefore overwrites
+ * anything we wrote, and sequence data (loaded before modifySequenceData
+ * is called) is preserved when IsSequenceRunning() is true.
+ *
+ * EnableChannelOutput() + StartForcingChannelOutput() are called when the
+ * first override is set so the output thread keeps transmitting even with
+ * no active sequence.  StopForcingChannelOutput() is called on clearAll().
  */
 
 // jsoncpp must come before FPP headers (Plugin.h expects it already present)
@@ -26,8 +32,9 @@
 #include <commands/Commands.h>
 #include <log.h>
 
-// Channel output control
+// Channel output control and sequence state
 #include <channeloutput/channeloutputthread.h>
+#include <Sequence.h>
 
 // Standard library
 #include <atomic>
@@ -56,7 +63,7 @@ public:
     explicit DMXSetChannelCommand(DMXBridgePlugin* plugin)
         : Command("DMX Bridge - Set Channel",
                   "Set a single DMX channel to a value (0-255). "
-                  "Overrides are active while no sequence is playing."),
+                  "Yields to running sequences and Display Testing."),
           m_plugin(plugin) {
         args.emplace_back("Channel", "int", "Channel number (1-65535)");
         args.back().setRange(1, DMX_MAX_CHANNEL - 1);
@@ -98,7 +105,6 @@ public:
     }
 
     ~DMXBridgePlugin() {
-        // Release any forced-output reference we're holding
         if (m_forcingOutput.exchange(false))
             StopForcingChannelOutput();
         unregisterCommands();
@@ -106,37 +112,20 @@ public:
     }
 
     // -----------------------------------------------------------------------
-    // Channel data hook — called every output frame, after overlays.
-    // Apply overrides only while no sequence is playing.
+    // Called after sequence data is loaded, BEFORE the channel tester runs.
+    //
+    // We apply overrides here so that:
+    //   - Sequence data (already in seqData) wins when a sequence is playing
+    //     (we return early via IsSequenceRunning).
+    //   - The channel tester overwrites our values for channels it's testing,
+    //     since it runs after this hook.
     // -----------------------------------------------------------------------
-    void modifyChannelData(int ms, uint8_t* seqData) override {
-        if (m_sequencePlaying.load(std::memory_order_relaxed))
+    void modifySequenceData(int ms, uint8_t* seqData) override {
+        if (sequence && sequence->IsSequenceRunning())
             return;
         std::lock_guard<std::mutex> lk(m_mutex);
         for (const auto& [ch, val] : m_overrides)
             seqData[ch - 1] = val;   // ch is 1-based; seqData is 0-indexed
-    }
-
-    // -----------------------------------------------------------------------
-    // Playlist hook — track whether a show is running.
-    // -----------------------------------------------------------------------
-    void playlistCallback(const Json::Value& playlist,
-                          const std::string& action,
-                          const std::string& section,
-                          int item) override {
-        if (action == "start" || action == "playing") {
-            m_sequencePlaying.store(true, std::memory_order_relaxed);
-        } else if (action == "stop") {
-            m_sequencePlaying.store(false, std::memory_order_relaxed);
-            // If overrides are waiting, re-assert forced output so they're
-            // applied now that the sequence has handed back control.
-            std::lock_guard<std::mutex> lk(m_mutex);
-            if (!m_overrides.empty() && !m_forcingOutput.load()) {
-                EnableChannelOutput();
-                StartForcingChannelOutput();
-                m_forcingOutput.store(true);
-            }
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -149,8 +138,8 @@ public:
             wasEmpty = m_overrides.empty();
             m_overrides[channel] = value;
         }
-        // First override: enable and force output so the channel thread
-        // keeps running even though no sequence is playing.
+        // First override: enable and force the output thread to keep running
+        // so our values are transmitted even with no sequence playing.
         if (wasEmpty && !m_forcingOutput.exchange(true)) {
             EnableChannelOutput();
             StartForcingChannelOutput();
@@ -169,7 +158,6 @@ public:
     }
 
 private:
-    std::atomic<bool>        m_sequencePlaying{false};
     std::atomic<bool>        m_forcingOutput{false};
     std::mutex               m_mutex;
     std::map<int, uint8_t>   m_overrides;        // channel (1-based) → value

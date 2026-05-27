@@ -2,7 +2,7 @@
  * fpp-DMXBridge — set individual DMX channels from FPP command presets.
  *
  * Commands registered:
- *   "DMX Bridge - Set Channel"   args: Channel (1–65535), Value (0–255)
+ *   "DMX Bridge - Set Channel"   args: Channel (1–512), Value (0–255)
  *   "DMX Bridge - Clear All"     no args — zeroes every active override
  *
  * Priority (highest to lowest):
@@ -46,9 +46,9 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// Plugin channel limit: covers 128 universes × 512 channels.
+// DMX universe limit: one universe, 512 channels.
 // ---------------------------------------------------------------------------
-static constexpr int DMX_MAX_CHANNEL = 65536;
+static constexpr int DMX_MAX_CHANNEL = 512;
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -63,10 +63,11 @@ public:
     explicit DMXSetChannelCommand(DMXBridgePlugin* plugin)
         : Command("DMX Bridge - Set Channel",
                   "Set a single DMX channel to a value (0-255). "
+                  "Channel 1-512 (one DMX universe). "
                   "Yields to running sequences and Display Testing."),
           m_plugin(plugin) {
-        args.emplace_back("Channel", "int", "Channel number (1-65535)");
-        args.back().setRange(1, DMX_MAX_CHANNEL - 1);
+        args.emplace_back("Channel", "int", "Channel number (1-512)");
+        args.back().setRange(1, DMX_MAX_CHANNEL);
         args.emplace_back("Value", "int", "Value (0-255)");
         args.back().setRange(0, 255);
     }
@@ -211,8 +212,8 @@ DMXSetChannelCommand::run(const std::vector<std::string>& a) {
     try {
         int ch  = std::stoi(a[0]);
         int val = std::stoi(a[1]);
-        if (ch < 1 || ch >= DMX_MAX_CHANNEL)
-            return std::make_unique<ErrorResult>("Channel out of range (1-65535)");
+        if (ch < 1 || ch > DMX_MAX_CHANNEL)
+            return std::make_unique<ErrorResult>("Channel out of range (1-512)");
         if (val < 0 || val > 255)
             return std::make_unique<ErrorResult>("Value out of range (0-255)");
         m_plugin->setChannel(ch, static_cast<uint8_t>(val));

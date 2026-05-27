@@ -30,8 +30,8 @@
                 <div class="col-sm-10">
                     <input type="number" id="dmxChannel" class="form-control form-control-sm"
                            style="max-width:120px;display:inline-block"
-                           min="1" max="65535" value="1">
-                    <span class="text-muted small ml-2">1–65535 (absolute FPP channel)</span>
+                           min="1" max="512" value="1">
+                    <span class="text-muted small ml-2">1–512 (DMX channel)</span>
                 </div>
             </div>
             <div class="form-group row mb-2">
@@ -78,7 +78,7 @@
                 <div class="col-sm-10">
                     <input type="number" id="presetChannel" class="form-control form-control-sm"
                            style="max-width:120px;display:inline-block"
-                           min="1" max="65535" value="1">
+                           min="1" max="512" value="1">
                 </div>
             </div>
             <div class="row">
@@ -115,7 +115,7 @@
                 <tbody>
                     <tr>
                         <td><code>DMX Bridge - Set Channel</code></td>
-                        <td>Channel (1–65535), Value (0–255)</td>
+                        <td>Channel (1–512), Value (0–255)</td>
                         <td>Sets channel to value. Persists until the next Set Channel or Clear All command, or until a sequence starts.</td>
                     </tr>
                     <tr>
@@ -154,7 +154,7 @@ function setStatus(id, ok, msg) {
 function sendSetChannel() {
     const ch  = parseInt($('#dmxChannel').val(), 10);
     const val = parseInt($('#dmxValue').val(), 10);
-    if (isNaN(ch) || ch < 1 || ch > 65535) { setStatus('dmxStatus', false, 'Invalid channel'); return; }
+    if (isNaN(ch) || ch < 1 || ch > 512) { setStatus('dmxStatus', false, 'Invalid channel'); return; }
     if (isNaN(val) || val < 0 || val > 255)  { setStatus('dmxStatus', false, 'Invalid value');   return; }
     setStatus('dmxStatus', true, 'Sending…');
     apiCommand('DMX Bridge - Set Channel', [String(ch), String(val)])
@@ -170,7 +170,7 @@ function sendClearAll() {
 
 function sendPreset(val) {
     const ch = parseInt($('#presetChannel').val(), 10);
-    if (isNaN(ch) || ch < 1 || ch > 65535) { setStatus('presetStatus', false, 'Invalid channel'); return; }
+    if (isNaN(ch) || ch < 1 || ch > 512) { setStatus('presetStatus', false, 'Invalid channel'); return; }
     apiCommand('DMX Bridge - Set Channel', [String(ch), String(val)])
         .then(() => setStatus('presetStatus', true, 'Sent ch ' + ch + ' = ' + val))
         .catch(() => setStatus('presetStatus', false, 'Failed — is the plugin loaded?'));

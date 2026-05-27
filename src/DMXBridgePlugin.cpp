@@ -3,19 +3,26 @@
  *
  * Commands registered:
  *   "DMX Bridge - Set Channel"   args: Channel (1–65535), Value (0–255)
- *   "DMX Bridge - Clear All"     no args — zeroes every override
+ *   "DMX Bridge - Clear All"     no args — zeroes every active override
  *
- * Overrides are applied in modifyChannelData() only when no playlist/sequence
- * is playing.  Starting a sequence hands full control back to the sequence.
+ * Overrides are applied via modifyChannelData() only while no playlist or
+ * sequence is playing.  Starting a sequence hands full control back to it.
  * All overrides start at zero when the plugin loads.
  */
 
-#include <Plugin.h>
-#include <Plugins.h>
-#include <Sequence.h>
-#include <commands/Commands.h>
-#include <commands/CommandManager.h>
+// jsoncpp must come before FPP headers (Plugin.h expects it already present)
+#if __has_include(<jsoncpp/json/json.h>)
+#include <jsoncpp/json/json.h>
+#elif __has_include(<json/json.h>)
+#include <json/json.h>
+#endif
 
+// FPP plugin API — commands/Commands.h declares CommandManager too
+#include <Plugin.h>
+#include <commands/Commands.h>
+#include <log.h>
+
+// Standard library
 #include <atomic>
 #include <cstdint>
 #include <map>
@@ -24,13 +31,11 @@
 #include <string>
 #include <vector>
 
-#if __has_include(<jsoncpp/json/json.h>)
-#include <jsoncpp/json/json.h>
-#elif __has_include(<json/json.h>)
-#include <json/json.h>
-#endif
-
-#include "fpp-pch.h"
+// ---------------------------------------------------------------------------
+// Plugin channel limit: covers 128 universes × 512 channels.
+// Increase if needed; must not exceed FPPD_MAX_CHANNELS (8M).
+// ---------------------------------------------------------------------------
+static constexpr int DMX_MAX_CHANNEL = 65536;
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -44,12 +49,12 @@ class DMXSetChannelCommand : public Command {
 public:
     explicit DMXSetChannelCommand(DMXBridgePlugin* plugin)
         : Command("DMX Bridge - Set Channel",
-                  "Set a single DMX channel to a value (0–255). "
+                  "Set a single DMX channel to a value (0-255). "
                   "Active only while no sequence/playlist is playing."),
           m_plugin(plugin) {
-        args.emplace_back("Channel", "int", "Channel number (1–65535)");
-        args.back().setRange(1, 65535);
-        args.emplace_back("Value", "int", "Value (0–255)");
+        args.emplace_back("Channel", "int", "Channel number (1-65535)");
+        args.back().setRange(1, DMX_MAX_CHANNEL - 1);
+        args.emplace_back("Value", "int", "Value (0-255)");
         args.back().setRange(0, 255);
     }
 
@@ -99,15 +104,12 @@ public:
         if (m_sequencePlaying.load(std::memory_order_relaxed))
             return;
         std::lock_guard<std::mutex> lk(m_mutex);
-        for (const auto& [ch, val] : m_overrides) {
-            // ch is 1-based; seqData is 0-indexed up to FPPD_MAX_CHANNELS
-            if (ch >= 1 && ch <= FPPD_MAX_CHANNELS)
-                seqData[ch - 1] = val;
-        }
+        for (const auto& [ch, val] : m_overrides)
+            seqData[ch - 1] = val;   // ch is 1-based; seqData is 0-indexed
     }
 
     // -----------------------------------------------------------------------
-    // Playlist hook — track playing state.
+    // Playlist hook — track whether a show is running.
     // -----------------------------------------------------------------------
     void playlistCallback(const Json::Value& playlist,
                           const std::string& action,
@@ -128,7 +130,7 @@ public:
             std::lock_guard<std::mutex> lk(m_mutex);
             m_overrides[channel] = value;
         }
-        LogInfo(VB_PLUGIN, "DMXBridge: Set ch %d = %u\n", channel, (unsigned)value);
+        LogInfo(VB_PLUGIN, "DMXBridge: ch %d = %u\n", channel, (unsigned)value);
     }
 
     void clearAll() {
@@ -136,13 +138,13 @@ public:
             std::lock_guard<std::mutex> lk(m_mutex);
             m_overrides.clear();
         }
-        LogInfo(VB_PLUGIN, "DMXBridge: Cleared all channel overrides\n");
+        LogInfo(VB_PLUGIN, "DMXBridge: cleared all channel overrides\n");
     }
 
 private:
     std::atomic<bool>        m_sequencePlaying{false};
     std::mutex               m_mutex;
-    std::map<int, uint8_t>   m_overrides;   // channel (1-based) → value
+    std::map<int, uint8_t>   m_overrides;        // channel (1-based) → value
     std::vector<std::string> m_registeredCommands;
 
     void registerCommands() {
@@ -172,10 +174,10 @@ DMXSetChannelCommand::run(const std::vector<std::string>& a) {
     try {
         int ch  = std::stoi(a[0]);
         int val = std::stoi(a[1]);
-        if (ch < 1 || ch > 65535)
-            return std::make_unique<ErrorResult>("Channel out of range (1–65535)");
+        if (ch < 1 || ch >= DMX_MAX_CHANNEL)
+            return std::make_unique<ErrorResult>("Channel out of range (1-65535)");
         if (val < 0 || val > 255)
-            return std::make_unique<ErrorResult>("Value out of range (0–255)");
+            return std::make_unique<ErrorResult>("Value out of range (0-255)");
         m_plugin->setChannel(ch, static_cast<uint8_t>(val));
         return std::make_unique<Result>("OK");
     } catch (...) {
@@ -190,8 +192,12 @@ DMXClearAllCommand::run(const std::vector<std::string>& a) {
 }
 
 // ---------------------------------------------------------------------------
-// Plugin entry point
+// Plugin entry point — must match FPPPlugins::Plugin* (*)() signature
 // ---------------------------------------------------------------------------
 extern "C" {
-    FPPPlugin* createPlugin() { return new DMXBridgePlugin(); }
+
+FPPPlugins::Plugin* createPlugin() {
+    return new DMXBridgePlugin();
 }
+
+} // extern "C"

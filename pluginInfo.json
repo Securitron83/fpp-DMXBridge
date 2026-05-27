@@ -1,0 +1,24 @@
+{
+  "repoName": "fpp-DMXBridge",
+  "name": "DMX Bridge",
+  "author": "Securitron83",
+  "description": "Set individual DMX channels from FPP command presets. Use the 'DMX Bridge - Set Channel' command to override a channel value (0–255) while no sequence is playing — ideal for centering moving heads, setting default positions, or triggering static scenes.",
+  "homeURL": "https://github.com/Securitron83/fpp-DMXBridge",
+  "srcURL": "https://github.com/Securitron83/fpp-DMXBridge.git",
+  "versions": [
+    {
+      "minFPPVersion": "9.0",
+      "maxFPPVersion": "0",
+      "branch": "master",
+      "sha": "",
+      "allowUpdates": 1
+    }
+  ],
+  "menuItems": [
+    {
+      "title": "DMX Bridge",
+      "page": "content.php",
+      "type": "content"
+    }
+  ]
+}

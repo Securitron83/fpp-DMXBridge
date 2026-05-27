@@ -5,9 +5,13 @@
  *   "DMX Bridge - Set Channel"   args: Channel (1–65535), Value (0–255)
  *   "DMX Bridge - Clear All"     no args — zeroes every active override
  *
- * Overrides are applied via modifyChannelData() only while no playlist or
- * sequence is playing.  Starting a sequence hands full control back to it.
- * All overrides start at zero when the plugin loads.
+ * When at least one override is active, the plugin calls
+ * EnableChannelOutput() + StartForcingChannelOutput() so that fppd keeps
+ * sending data even without a running sequence.  StopForcingChannelOutput()
+ * is called when overrides are cleared.
+ *
+ * Overrides are applied in modifyChannelData() only while no playlist or
+ * sequence is active — a running sequence has full control over those channels.
  */
 
 // jsoncpp must come before FPP headers (Plugin.h expects it already present)
@@ -17,10 +21,13 @@
 #include <json/json.h>
 #endif
 
-// FPP plugin API — commands/Commands.h declares CommandManager too
+// FPP plugin API
 #include <Plugin.h>
 #include <commands/Commands.h>
 #include <log.h>
+
+// Channel output control
+#include <channeloutput/channeloutputthread.h>
 
 // Standard library
 #include <atomic>
@@ -33,7 +40,6 @@
 
 // ---------------------------------------------------------------------------
 // Plugin channel limit: covers 128 universes × 512 channels.
-// Increase if needed; must not exceed FPPD_MAX_CHANNELS (8M).
 // ---------------------------------------------------------------------------
 static constexpr int DMX_MAX_CHANNEL = 65536;
 
@@ -50,7 +56,7 @@ public:
     explicit DMXSetChannelCommand(DMXBridgePlugin* plugin)
         : Command("DMX Bridge - Set Channel",
                   "Set a single DMX channel to a value (0-255). "
-                  "Active only while no sequence/playlist is playing."),
+                  "Overrides are active while no sequence is playing."),
           m_plugin(plugin) {
         args.emplace_back("Channel", "int", "Channel number (1-65535)");
         args.back().setRange(1, DMX_MAX_CHANNEL - 1);
@@ -92,6 +98,9 @@ public:
     }
 
     ~DMXBridgePlugin() {
+        // Release any forced-output reference we're holding
+        if (m_forcingOutput.exchange(false))
+            StopForcingChannelOutput();
         unregisterCommands();
         LogInfo(VB_PLUGIN, "DMXBridge: shutdown\n");
     }
@@ -119,6 +128,14 @@ public:
             m_sequencePlaying.store(true, std::memory_order_relaxed);
         } else if (action == "stop") {
             m_sequencePlaying.store(false, std::memory_order_relaxed);
+            // If overrides are waiting, re-assert forced output so they're
+            // applied now that the sequence has handed back control.
+            std::lock_guard<std::mutex> lk(m_mutex);
+            if (!m_overrides.empty() && !m_forcingOutput.load()) {
+                EnableChannelOutput();
+                StartForcingChannelOutput();
+                m_forcingOutput.store(true);
+            }
         }
     }
 
@@ -126,9 +143,17 @@ public:
     // Called by commands
     // -----------------------------------------------------------------------
     void setChannel(int channel, uint8_t value) {
+        bool wasEmpty;
         {
             std::lock_guard<std::mutex> lk(m_mutex);
+            wasEmpty = m_overrides.empty();
             m_overrides[channel] = value;
+        }
+        // First override: enable and force output so the channel thread
+        // keeps running even though no sequence is playing.
+        if (wasEmpty && !m_forcingOutput.exchange(true)) {
+            EnableChannelOutput();
+            StartForcingChannelOutput();
         }
         LogInfo(VB_PLUGIN, "DMXBridge: ch %d = %u\n", channel, (unsigned)value);
     }
@@ -138,11 +163,14 @@ public:
             std::lock_guard<std::mutex> lk(m_mutex);
             m_overrides.clear();
         }
+        if (m_forcingOutput.exchange(false))
+            StopForcingChannelOutput();
         LogInfo(VB_PLUGIN, "DMXBridge: cleared all channel overrides\n");
     }
 
 private:
     std::atomic<bool>        m_sequencePlaying{false};
+    std::atomic<bool>        m_forcingOutput{false};
     std::mutex               m_mutex;
     std::map<int, uint8_t>   m_overrides;        // channel (1-based) → value
     std::vector<std::string> m_registeredCommands;
